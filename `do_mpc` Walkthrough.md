@@ -83,7 +83,7 @@ n_states = 3
 n_inputs = 2
 n_params = 3
 ```
-then symbolically express model variables - the states, inputs and parameters; alternatively referred to as `_x`, `_u`, and `_p`, respectively.
+then symbolically express model variables - the states, inputs and parameters; alternatively referred to as `_x`, `_u`, and `_p`, respectively - using the `set_variable` method of a `Model` object.
 ```python
 disc_angle = model.set_variable(var_type='states',
                                 var_name='disc_angle',
@@ -114,12 +114,71 @@ damping_factor = np.array([6.78, 8.01, 8.82]) * 1e-5
 ```
 
 #### Model Update Rules
-
+The `set_rhs` method of a `Model` object defines the update rule, namely
+$$\frac{\partial \boldsymbol{x}}{\partial t} = f\left(\boldsymbol{x},\, \boldsymbol{u},\, \boldsymbol{p}\right) =  \begin{bmatrix}
+ \dot{x_1} & \dot{x_2} & \dot{x_3} & \dot{x_4} & \dot{x_5} & \dot{x_6}
+ \end{bmatrix}^{\top}$$
 ```python
 disc_angle_next = d_disc_angle
 model.set_rhs(var_name='disc_angle', expr=disc_angle_next)
 ```
+$\dot{x}_4$, $\dot{x}_5$, and $\dot{x}_6$ are more complex expressions, so we concatenate symbolic expressions using the `casadi.vertcat` method call[^3]
+```python
+d_disc_angle_next = vertcat(  
+    1 / disc_inertia[0] * (-spring_constant[0] * (disc_angle[0] - motor_angle[0])  
+                           - spring_constant[1] * (disc_angle[0] - disc_angle[1])  
+                           - damping_factor[0] * d_disc_angle[0]),  
+    1 / disc_inertia[1] * (-spring_constant[1] * (disc_angle[1] - disc_angle[0])  
+                           - spring_constant[2] * (disc_angle[1] - disc_angle[2])  
+                           - damping_factor[1] * d_disc_angle[1]),  
+    1 / disc_inertia[2] * (-spring_constant[2] * (disc_angle[2] - disc_angle[1])  
+                           - spring_constant[3] * (disc_angle[2] - motor_angle[1])  
+                           - damping_factor[2] * d_disc_angle[2])  
+)  
+model.set_rhs(var_name='d_disc_angle', expr=d_disc_angle_next)
+```
+Finally, inputs' update rules are defined
+```python
+proportional_motor_angle_dampening = 1e-2  
+motor_angle_next = vertcat(
+    1 / proportional_motor_angle_dampening * (motor_angle_set[0] - motor_angle[0]),
+    1 / proportional_motor_angle_dampening * (motor_angle_set[1] - motor_angle[1])
+)
+model.set_rhs(var_name='motor_angle', expr=motor_angle_next)
+```
+#### Model Setup
+After declaring all model variables, we finalize the modelling process with a `model.setup` method call, locking the model and preventing further setting of variables, expressions, etc...[^4]
+```python
+model.setup()
+```
 
+# MPC Controller Configuration
+### MPC Controller Instantiation
+```python
+mpc = do_mpc.controller.MPC(model)
+```
+### MPC Controller Parameter Setup
+Setup controller parameters using an `MPC` object's `set_param` method[^5]
+```python
+mpc_kwargs = {  
+    'n_horizon': 20,  
+    't_step': 0.1,
+    # Robust horizon for robust scenario-tree MPC;
+    # Optimization problem grows ~ e^{n_robust}
+    'n_robust': 1,
+    'store_full_solution': True,  
+}
+# Very much anti-pythonic, but suggested by package devs  
+for mpc_setting, mpc_setting_val in mpc_kwargs.items():  
+    mpc._settings[mpc_setting] = mpc_setting_val
+# Would prefer to use the line below, but it will be deprecated
+# mpc.set_param(**mpc_kwargs)
+```
+L of parameters and MPC settings: https://www.do-mpc.com/en/latest/api/do_mpc.controller.MPCSettings.html#mpcsettings  
+By default (and is currently the only option), continuous models are discretized using collocation  
 
 [^1]: The *Getting started: MPC* page states that $f$ includes another argument, $\boldsymbol{z} \in \mathbb{R}^{n_z}$, the algebraic states, however it is unnecessary for the walkthrough (and most, in general) models, thus was omitted here. If it happens that the application does require algebraic states, it should be immediately obvious by the formulation, and hence is left to the discretion of the developer.
 [^2]: [`do-mpc` 4.6.2 documentation - `Model` Objects](https://www.do-mpc.com/en/latest/api/do_mpc.model.Model.html#do_mpc.model.Model)
+[^3]: [CasADi Python API documentation - `vertcat` and `horzcat`](https://web.casadi.org/docs/#:~:text=Vertical%20and%20horizontal%20concatenation%20is%20performed%20using%20the%20functions%20vertcat%20and%20horzcat)
+[^4]: [`do-mpc` 4.6.2 documentation - `Model.setup`](https://www.do-mpc.com/en/latest/api/do_mpc.model.Model.html#do_mpc.model.Model.setup)
+[^5]: [`do-mpc` 4.6.2 documentation - `MPC.set_param`](https://www.do-mpc.com/en/latest/api/do_mpc.controller.MPC.html#set-param)
